@@ -46,3 +46,64 @@ GH_REPO=<your-infra-repo-name>
 SUB=$(az account show --query id -o tsv)
 TENANT=$(az account show --query tenantId -o tsv)
 SA_ID=$(az storage account show -n $SA -g $RG --query id -o tsv)
+
+## Plan Azure APP (PRs only, read-mostly)
+PLAN_APP=$(az ad app create --display-name gh-tf-plan --query appId -o tsv)
+az ad sp create --id $PLAN_APP
+
+az ad app federated-credential create --id $PLAN_APP --parameters "{
+  \"name\": \"gh-pull-request\",
+  \"issuer\": \"https://token.actions.githubusercontent.com\",
+  \"subject\": \"repo:$GH_OWNER/$GH_REPO:pull_request\",
+  \"audiences\": [\"api://AzureADTokenExchange\"]
+}"
+
+az role assignment create --assignee $PLAN_APP --role Reader \
+  --scope /subscriptions/$SUB
+az role assignment create --assignee $PLAN_APP --role "Storage Blob Data Contributor" \
+  --scope $SA_ID
+
+## Apply Azure APP (main branch via production environment only)
+
+GH_OWNER=<your-github-username>
+GH_REPO=<your-infra-repo-name>
+RG=rg-tfstate                      # your single resource group
+SA=<your-storage-account-name>
+
+SUB=$(az account show --query id -o tsv)
+TENANT=$(az account show --query tenantId -o tsv)
+SA_ID=$(az storage account show -n $SA -g $RG --query id -o tsv)
+RG_ID=$(az group show -n $RG --query id -o tsv)
+
+APPLY_APP=$(az ad app create --display-name gh-tf-apply --query appId -o tsv)
+az ad sp create --id $APPLY_APP
+
+az ad app federated-credential create --id $APPLY_APP --parameters "{
+  \"name\": \"gh-env-production\",
+  \"issuer\": \"https://token.actions.githubusercontent.com\",
+  \"subject\": \"repo:$GH_OWNER/$GH_REPO:environment:production\",
+  \"audiences\": [\"api://AzureADTokenExchange\"]
+}"
+
+<!-- # remove the subscription-wide Contributor if you created it earlier (ignore errors if not) -->
+az role assignment delete --assignee $APPLY_APP --role Contributor \
+  --scope /subscriptions/$SUB
+
+<!-- # Contributor on the RG only -->
+az role assignment create --assignee $APPLY_APP --role Contributor --scope $RG_ID
+
+<!-- # state access through Entra auth -->
+az role assignment create --assignee $APPLY_APP \
+  --role "Storage Blob Data Contributor" --scope $SA_ID
+
+## setup the Azue App ids in Github
+gh variable set AZURE_APPLY_CLIENT_ID --body "$APPLY_APP"
+
+<!-- # Verify -->
+az ad app federated-credential list --id $APPLY_APP -o table
+az role assignment list --assignee $APPLY_APP --all -o table
+
+<!-- you must reference the manually created resource group in terraform source code -->
+data "azurerm_resource_group" "main" {
+  name = "rg-tfstate"
+}
