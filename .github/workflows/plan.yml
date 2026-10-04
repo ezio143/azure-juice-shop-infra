@@ -1,0 +1,23 @@
+name: terraform-plan
+on: pull_request
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    env:
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ vars.AZURE_PLAN_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      - run: terraform init -input=false
+      - run: terraform plan -out=tfplan -input=false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: tfplan
